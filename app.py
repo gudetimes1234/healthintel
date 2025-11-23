@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from database import CDCFluData, get_db_session
 from sqlalchemy import func, and_, desc
 import logging
+from io import BytesIO
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -276,13 +277,54 @@ if not df_filtered.empty:
         height=400
     )
     
-    csv = df_display_formatted.to_csv(index=False)
-    st.download_button(
-        label="📥 Download Data as CSV",
-        data=csv,
-        file_name=f"cdc_flu_data_{datetime.now().strftime('%Y%m%d')}.csv",
-        mime="text/csv"
-    )
+    st.markdown("### 📥 Export Data")
+    st.markdown("Download the current filtered dataset in your preferred format:")
+    
+    col1, col2, col3 = st.columns([1, 1, 2])
+    
+    with col1:
+        csv = df_display_formatted.to_csv(index=False)
+        st.download_button(
+            label="📄 Download CSV",
+            data=csv,
+            file_name=f"cdc_flu_data_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    
+    with col2:
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            df_display_formatted.to_excel(writer, sheet_name='Flu Data', index=False)
+            
+            workbook = writer.book
+            worksheet = writer.sheets['Flu Data']
+            
+            header_format = workbook.add_format({
+                'bold': True,
+                'bg_color': '#4472C4',
+                'font_color': 'white',
+                'border': 1
+            })
+            
+            for col_num, value in enumerate(df_display_formatted.columns.values):
+                worksheet.write(0, col_num, value, header_format)
+                worksheet.set_column(col_num, col_num, len(str(value)) + 5)
+        
+        st.download_button(
+            label="📊 Download Excel",
+            data=buffer.getvalue(),
+            file_name=f"cdc_flu_data_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+    
+    with col3:
+        st.metric(
+            label="Records in Export",
+            value=f"{len(df_display_formatted):,}",
+            help="Number of records in the current filtered view (max 100 shown)"
+        )
 else:
     st.info("No data available for selected filters")
 
