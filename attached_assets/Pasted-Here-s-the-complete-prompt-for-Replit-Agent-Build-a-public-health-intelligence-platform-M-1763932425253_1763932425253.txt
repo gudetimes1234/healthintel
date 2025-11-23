@@ -1,0 +1,89 @@
+Here’s the complete prompt for Replit Agent:
+
+-----
+
+**Build a public health intelligence platform MVP with the following:**
+
+**Tech Stack:**
+
+- Apache Airflow for workflow orchestration
+- Streamlit for the web dashboard UI
+- MongoDB for raw data storage
+- Python 3.11+
+
+**What to build:**
+
+1. **Airflow Setup:**
+
+- Initialize Airflow with proper folder structure (dags/, plugins/, logs/)
+- Create a DAG that runs every 6 hours to fetch CDC FluView data
+- DAG should have tasks for: extract (API call), transform (clean data), validate (data quality checks), load (save to MongoDB)
+- Include proper error handling and retry logic
+- Add logging for each step
+
+1. **CDC Data Pipeline:**
+
+- Extract: Fetch influenza surveillance data from CDC’s FluView API (<https://gis.cdc.gov/grasp/fluview/fluportaldashboard.ashx>)
+- Transform: Parse JSON response, normalize data into clean format with fields: week_ending, season, region, percent_positive, total_specimens, timestamp
+- Validate: Check for nulls, data types, value ranges (percent between 0-100, specimens > 0)
+- Load: Store in MongoDB collection called “cdc_flu_data”
+
+1. **MongoDB Setup:**
+
+- Configure MongoDB connection
+- Create database called “health_intel”
+- Create collection for CDC flu data with proper indexes (region, week_ending, timestamp)
+
+1. **Streamlit Dashboard:**
+
+- Homepage with title “Public Health Intelligence Platform”
+- Sidebar filters for: date range, region selection, metric selection
+- Main area with:
+  - Line chart showing flu trends over time
+  - Geographic breakdown (bar chart or table) by state/region
+  - Key metrics cards (latest percent positive, total specimens, week over week change)
+  - Data table showing recent records
+- Connect to MongoDB to fetch and display data
+- Make it responsive and clean
+
+1. **Project Structure:**
+
+```
+/
+├── airflow/
+│   ├── dags/
+│   │   └── cdc_flu_pipeline.py
+│   ├── plugins/
+│   └── airflow.cfg
+├── streamlit/
+│   └── app.py
+├── requirements.txt
+├── README.md
+└── docker-compose.yml (optional, for easy local setup)
+```
+
+1. **Requirements to include:**
+
+- apache-airflow
+- streamlit
+- pymongo
+- pandas
+- requests
+- plotly (for charts)
+
+**Key requirements:**
+
+- Use environment variables for MongoDB connection strings
+- Add proper error handling in all pipeline steps
+- Include data validation that raises alerts if data quality issues found
+- Make the Streamlit app read-only (just displaying data, no user data input)
+- Add comments explaining what each part does
+- Include a README with setup instructions
+
+**Start with this MVP:** One data source (CDC Flu), one DAG, one dashboard. Keep it simple and functional. We’ll add more data sources later.
+
+Make sure both Airflow and Streamlit can run simultaneously (different ports). Airflow on default 8080, Streamlit on 8501.
+
+-----
+
+Copy that entire thing into Replit Agent and let it cook.​​​​​​​​​​​​​​​​
