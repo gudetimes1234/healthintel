@@ -8,7 +8,7 @@ from typing import Any
 from core.container import Container
 from core.config import Config
 from sources.registry import get_registry
-from database import Base
+from models import Base
 
 # Import sources to register them
 import sources.flu_surveillance

@@ -6,7 +6,7 @@ from sqlalchemy import and_
 
 from .base import BaseDataSource
 from .registry import register
-from database import CDCFluData
+from models import PublicObservation
 
 
 def epiweek_to_date(epiweek: int) -> datetime.date:
@@ -23,15 +23,20 @@ def epiweek_to_date(epiweek: int) -> datetime.date:
     return week_ending.date()
 
 
-def get_season_from_epiweek(epiweek: int) -> str:
-    """Determine flu season from epiweek."""
-    year = int(str(epiweek)[:4])
-    week = int(str(epiweek)[4:])
-
-    if week >= 40:
-        return f"{year}-{str(year + 1)[2:]}"
-    else:
-        return f"{year - 1}-{str(year)[2:]}"
+# Map API region codes to standardized geo values
+REGION_TO_GEO = {
+    'nat': ('nation', 'us'),
+    'hhs1': ('hhs_region', 'hhs1'),
+    'hhs2': ('hhs_region', 'hhs2'),
+    'hhs3': ('hhs_region', 'hhs3'),
+    'hhs4': ('hhs_region', 'hhs4'),
+    'hhs5': ('hhs_region', 'hhs5'),
+    'hhs6': ('hhs_region', 'hhs6'),
+    'hhs7': ('hhs_region', 'hhs7'),
+    'hhs8': ('hhs_region', 'hhs8'),
+    'hhs9': ('hhs_region', 'hhs9'),
+    'hhs10': ('hhs_region', 'hhs10'),
+}
 
 
 @register
@@ -41,20 +46,6 @@ class FluSurveillanceSource(BaseDataSource):
     name = "flu_surveillance"
     description = "CDC Influenza Surveillance (ILI data)"
 
-    REGION_NAME_MAP = {
-        'nat': 'National',
-        'hhs1': 'HHS Region 1',
-        'hhs2': 'HHS Region 2',
-        'hhs3': 'HHS Region 3',
-        'hhs4': 'HHS Region 4',
-        'hhs5': 'HHS Region 5',
-        'hhs6': 'HHS Region 6',
-        'hhs7': 'HHS Region 7',
-        'hhs8': 'HHS Region 8',
-        'hhs9': 'HHS Region 9',
-        'hhs10': 'HHS Region 10'
-    }
-
     def extract(self) -> list[dict[str, Any]]:
         """Extract influenza surveillance data from CDC API."""
         self.logger.info("Starting data extraction from CDC Delphi Epidata API")
@@ -62,7 +53,7 @@ class FluSurveillanceSource(BaseDataSource):
         api_config = self.config.get('api', {})
         url = api_config.get('base_url')
         timeout = api_config.get('timeout', 30)
-        regions = self.config.get('regions', list(self.REGION_NAME_MAP.keys()))
+        regions = self.config.get('regions', list(REGION_TO_GEO.keys()))
 
         # Calculate epiweek range
         current_year = datetime.now().year
@@ -87,7 +78,7 @@ class FluSurveillanceSource(BaseDataSource):
         return all_data
 
     def transform(self, raw_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Transform raw CDC data into normalized format."""
+        """Transform raw CDC data into unified observation format."""
         self.logger.info(f"Transforming {len(raw_data)} records")
 
         transformed = []
@@ -99,14 +90,29 @@ class FluSurveillanceSource(BaseDataSource):
                     continue
 
                 region_code = record.get('region', 'nat')
+                geo_type, geo_value = REGION_TO_GEO.get(region_code, ('unknown', region_code))
 
+                # Create observation for ILI percentage
+                ili_value = float(record.get('ili', 0) or 0)
                 transformed.append({
-                    'week_ending': epiweek_to_date(epiweek),
-                    'season': get_season_from_epiweek(epiweek),
-                    'region': self.REGION_NAME_MAP.get(region_code, region_code),
-                    'percent_positive': float(record.get('ili', 0) or 0),
-                    'total_specimens': int(record.get('num_patients', 0) or 0),
-                    'timestamp': datetime.utcnow()
+                    'date': epiweek_to_date(epiweek),
+                    'geo_type': geo_type,
+                    'geo_value': geo_value,
+                    'source': 'fluview',
+                    'signal': 'ili_pct',
+                    'value': ili_value,
+                    'sample_size': int(record.get('num_patients', 0) or 0),
+                })
+
+                # Create observation for total specimens
+                specimens = int(record.get('num_patients', 0) or 0)
+                transformed.append({
+                    'date': epiweek_to_date(epiweek),
+                    'geo_type': geo_type,
+                    'geo_value': geo_value,
+                    'source': 'fluview',
+                    'signal': 'total_specimens',
+                    'value': float(specimens),
                 })
 
             except (ValueError, KeyError, TypeError) as e:
@@ -120,8 +126,6 @@ class FluSurveillanceSource(BaseDataSource):
 
         validation_config = self.config.get('validation', {})
         max_error_rate = validation_config.get('max_error_rate', 0.5)
-        percent_range = validation_config.get('percent_positive_range', [0, 100])
-        min_specimens = validation_config.get('total_specimens_min', 0)
 
         valid_records = []
         errors = []
@@ -129,22 +133,20 @@ class FluSurveillanceSource(BaseDataSource):
         for i, record in enumerate(data):
             record_errors = []
 
-            if record.get('week_ending') is None:
-                record_errors.append(f"Record {i}: Missing week_ending")
+            if record.get('date') is None:
+                record_errors.append(f"Record {i}: Missing date")
 
-            if not record.get('season'):
-                record_errors.append(f"Record {i}: Missing season")
+            if not record.get('geo_type'):
+                record_errors.append(f"Record {i}: Missing geo_type")
 
-            if not record.get('region'):
-                record_errors.append(f"Record {i}: Missing region")
+            if not record.get('signal'):
+                record_errors.append(f"Record {i}: Missing signal")
 
-            pct = record.get('percent_positive', -1)
-            if pct < percent_range[0] or pct > percent_range[1]:
-                record_errors.append(f"Record {i}: Invalid percent_positive ({pct})")
-
-            specimens = record.get('total_specimens', -1)
-            if specimens < min_specimens:
-                record_errors.append(f"Record {i}: Invalid total_specimens ({specimens})")
+            # Signal-specific validation
+            if record.get('signal') == 'ili_pct':
+                value = record.get('value', -1)
+                if value < 0 or value > 100:
+                    record_errors.append(f"Record {i}: Invalid ili_pct ({value})")
 
             if record_errors:
                 errors.extend(record_errors)
@@ -163,7 +165,7 @@ class FluSurveillanceSource(BaseDataSource):
         return valid_records
 
     def load(self, data: list[dict[str, Any]]) -> dict[str, int]:
-        """Load validated data into database."""
+        """Load validated data into unified observations table."""
         self.logger.info(f"Loading {len(data)} records to database")
 
         inserted = 0
@@ -171,21 +173,32 @@ class FluSurveillanceSource(BaseDataSource):
 
         with self.db_factory.get_session() as session:
             for record in data:
-                existing = session.query(CDCFluData).filter(
+                existing = session.query(PublicObservation).filter(
                     and_(
-                        CDCFluData.week_ending == record['week_ending'],
-                        CDCFluData.region == record['region'],
-                        CDCFluData.season == record['season']
+                        PublicObservation.date == record['date'],
+                        PublicObservation.geo_type == record['geo_type'],
+                        PublicObservation.geo_value == record['geo_value'],
+                        PublicObservation.source == record['source'],
+                        PublicObservation.signal == record['signal'],
                     )
                 ).first()
 
                 if existing:
-                    existing.percent_positive = record['percent_positive']
-                    existing.total_specimens = record['total_specimens']
-                    existing.timestamp = record['timestamp']
+                    existing.value = record['value']
+                    existing.sample_size = record.get('sample_size')
+                    existing.updated_at = datetime.utcnow()
                     updated += 1
                 else:
-                    session.add(CDCFluData(**record))
+                    obs = PublicObservation(
+                        date=record['date'],
+                        geo_type=record['geo_type'],
+                        geo_value=record['geo_value'],
+                        source=record['source'],
+                        signal=record['signal'],
+                        value=record['value'],
+                        sample_size=record.get('sample_size'),
+                    )
+                    session.add(obs)
                     inserted += 1
 
         return {'inserted': inserted, 'updated': updated, 'total': len(data)}

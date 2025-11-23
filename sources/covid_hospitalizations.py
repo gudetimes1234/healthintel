@@ -6,7 +6,7 @@ from sqlalchemy import and_
 
 from .base import BaseDataSource
 from .registry import register
-from database import CovidData
+from models import PublicObservation
 
 
 def epiweek_to_date(epiweek: int) -> datetime.date:
@@ -28,10 +28,8 @@ def covidcast_date_to_datetime(date_int: int) -> datetime.date:
     date_str = str(date_int)
 
     if len(date_str) == 6:
-        # Epiweek format (YYYYWW)
         return epiweek_to_date(date_int)
     else:
-        # YYYYMMDD format
         return datetime.strptime(date_str, '%Y%m%d').date()
 
 
@@ -66,7 +64,6 @@ class CovidHospitalizationsSource(BaseDataSource):
 
         all_data = {}
 
-        # Fetch for each geographic level
         for geo_type in geo_levels:
             geo_values = 'us' if geo_type == 'nation' else '*'
 
@@ -79,7 +76,7 @@ class CovidHospitalizationsSource(BaseDataSource):
                 'geo_values': geo_values
             }
 
-            self.logger.info(f"Fetching {signal} for {geo_type} (epiweeks {start_epiweek}-{end_epiweek})")
+            self.logger.info(f"Fetching {signal} for {geo_type}")
             result = self.http_client.get(url, params=params, timeout=timeout)
 
             if result.get('result') == 1 and 'epidata' in result:
@@ -95,17 +92,38 @@ class CovidHospitalizationsSource(BaseDataSource):
                             'geo_value': record['geo_value']
                         }
 
-                    all_data[key]['confirmed_7day_avg'] = record.get('value')
+                    all_data[key]['value'] = record.get('value')
+                    all_data[key]['stderr'] = record.get('stderr')
             else:
-                self.logger.warning(f"No results for {geo_type}: {result.get('message', 'Unknown error')}")
+                self.logger.warning(f"No results for {geo_type}: {result.get('message', 'Unknown')}")
 
         self.logger.info(f"Extracted {len(all_data)} unique date-location combinations")
         return list(all_data.values())
 
     def transform(self, raw_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Transform raw data (minimal transformation needed)."""
-        # Data is already in correct format from extract
-        return raw_data
+        """Transform raw data into unified observation format."""
+        self.logger.info(f"Transforming {len(raw_data)} records")
+
+        transformed = []
+
+        for record in raw_data:
+            try:
+                date_obj = covidcast_date_to_datetime(record['date'])
+
+                transformed.append({
+                    'date': date_obj,
+                    'geo_type': record['geo_type'],
+                    'geo_value': record['geo_value'],
+                    'source': 'nhsn',
+                    'signal': 'covid_hosp',
+                    'value': record.get('value'),
+                    'stderr': record.get('stderr'),
+                })
+
+            except (ValueError, KeyError, TypeError) as e:
+                self.logger.warning(f"Skipping malformed record: {e}")
+
+        return transformed
 
     def validate(self, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Validate COVID-19 data quality."""
@@ -119,30 +137,18 @@ class CovidHospitalizationsSource(BaseDataSource):
 
         for record in data:
             try:
-                # Check required fields
-                if not all(k in record for k in ['date', 'geo_type', 'geo_value']):
+                if not all(k in record for k in ['date', 'geo_type', 'geo_value', 'signal']):
                     self.logger.warning(f"Missing required fields: {record}")
                     invalid_count += 1
                     continue
 
-                # Check at least one metric present
-                has_data = any([
-                    record.get('confirmed_cases') is not None,
-                    record.get('deaths') is not None,
-                    record.get('confirmed_7day_avg') is not None,
-                    record.get('deaths_7day_avg') is not None
-                ])
-
-                if not has_data:
-                    self.logger.warning(f"No metrics in record: {record}")
+                if record.get('value') is None:
+                    self.logger.warning(f"No value in record: {record}")
                     invalid_count += 1
                     continue
 
-                # Validate value ranges
-                for field in ['confirmed_7day_avg', 'confirmed_cases', 'deaths', 'deaths_7day_avg']:
-                    if field in record and record[field] is not None:
-                        if abs(record[field]) > max_value:
-                            self.logger.warning(f"Suspiciously large {field}: {record[field]}")
+                if abs(record['value']) > max_value:
+                    self.logger.warning(f"Suspiciously large value: {record['value']}")
 
                 valid_records.append(record)
 
@@ -154,7 +160,7 @@ class CovidHospitalizationsSource(BaseDataSource):
         return valid_records
 
     def load(self, data: list[dict[str, Any]]) -> dict[str, int]:
-        """Load validated data into database."""
+        """Load validated data into unified observations table."""
         self.logger.info(f"Loading {len(data)} records to database")
 
         inserted = 0
@@ -162,34 +168,32 @@ class CovidHospitalizationsSource(BaseDataSource):
 
         with self.db_factory.get_session() as session:
             for record in data:
-                date_obj = covidcast_date_to_datetime(record['date'])
-
-                existing = session.query(CovidData).filter(
+                existing = session.query(PublicObservation).filter(
                     and_(
-                        CovidData.date == date_obj,
-                        CovidData.geo_type == record['geo_type'],
-                        CovidData.geo_value == record['geo_value']
+                        PublicObservation.date == record['date'],
+                        PublicObservation.geo_type == record['geo_type'],
+                        PublicObservation.geo_value == record['geo_value'],
+                        PublicObservation.source == record['source'],
+                        PublicObservation.signal == record['signal'],
                     )
                 ).first()
 
                 if existing:
-                    existing.confirmed_cases = record.get('confirmed_cases')
-                    existing.deaths = record.get('deaths')
-                    existing.confirmed_7day_avg = record.get('confirmed_7day_avg')
-                    existing.deaths_7day_avg = record.get('deaths_7day_avg')
-                    existing.timestamp = datetime.utcnow()
+                    existing.value = record['value']
+                    existing.stderr = record.get('stderr')
+                    existing.updated_at = datetime.utcnow()
                     updated += 1
                 else:
-                    session.add(CovidData(
-                        date=date_obj,
+                    obs = PublicObservation(
+                        date=record['date'],
                         geo_type=record['geo_type'],
                         geo_value=record['geo_value'],
-                        confirmed_cases=record.get('confirmed_cases'),
-                        deaths=record.get('deaths'),
-                        confirmed_7day_avg=record.get('confirmed_7day_avg'),
-                        deaths_7day_avg=record.get('deaths_7day_avg'),
-                        timestamp=datetime.utcnow()
-                    ))
+                        source=record['source'],
+                        signal=record['signal'],
+                        value=record['value'],
+                        stderr=record.get('stderr'),
+                    )
+                    session.add(obs)
                     inserted += 1
 
         return {'inserted': inserted, 'updated': updated, 'total': len(data)}
