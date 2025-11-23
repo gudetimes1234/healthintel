@@ -127,6 +127,15 @@ selected_region = st.sidebar.selectbox(
     index=0
 )
 
+# Historical Comparison Toggle
+st.sidebar.markdown("---")
+st.sidebar.subheader("📊 Historical Comparison")
+enable_comparison = st.sidebar.checkbox(
+    "Enable Year-over-Year Comparison",
+    value=False,
+    help="Compare current season with previous season(s)"
+)
+
 df['week_ending'] = pd.to_datetime(df['week_ending'])
 
 min_date = df['week_ending'].min().date()
@@ -211,43 +220,96 @@ with col_left:
     if not df_filtered.empty:
         metric_column = 'percent_positive' if selected_metric == 'Percent Positive' else 'total_specimens'
         
-        if selected_region == 'All Regions':
-            df_grouped = df_filtered.groupby(['week_ending', 'region'])[metric_column].mean().reset_index()
+        if enable_comparison:
+            # Historical comparison mode - add week number for alignment
+            df_filtered_comp = df_filtered.copy()
+            df_filtered_comp['week_number'] = df_filtered_comp['week_ending'].dt.isocalendar().week
+            df_filtered_comp['year'] = df_filtered_comp['week_ending'].dt.year
             
-            fig = px.line(
-                df_grouped,
-                x='week_ending',
-                y=metric_column,
-                color='region',
-                title=f'{selected_metric} by Region',
-                labels={
-                    'week_ending': 'Week Ending',
-                    metric_column: selected_metric,
-                    'region': 'Region'
-                }
+            # Get available seasons for comparison
+            available_seasons = sorted(df_filtered_comp['season'].unique(), reverse=True)
+            
+            if selected_region == 'All Regions':
+                df_comp_grouped = df_filtered_comp.groupby(['week_number', 'season'])[metric_column].mean().reset_index()
+                
+                fig = px.line(
+                    df_comp_grouped,
+                    x='week_number',
+                    y=metric_column,
+                    color='season',
+                    title=f'{selected_metric} - Season Comparison',
+                    labels={
+                        'week_number': 'Week of Year',
+                        metric_column: selected_metric,
+                        'season': 'Season'
+                    }
+                )
+            else:
+                df_region_comp = df_filtered_comp[df_filtered_comp['region'] == selected_region]
+                df_comp_grouped = df_region_comp.groupby(['week_number', 'season'])[metric_column].mean().reset_index()
+                
+                fig = px.line(
+                    df_comp_grouped,
+                    x='week_number',
+                    y=metric_column,
+                    color='season',
+                    title=f'{selected_metric} for {selected_region} - Season Comparison',
+                    labels={
+                        'week_number': 'Week of Year',
+                        metric_column: selected_metric,
+                        'season': 'Season'
+                    }
+                )
+            
+            fig.update_layout(
+                height=400,
+                hovermode='x unified',
+                xaxis_title="Week of Year",
+                yaxis_title=selected_metric,
+                legend_title_text="Season"
             )
         else:
-            df_region = df_filtered[df_filtered['region'] == selected_region]
+            # Standard time series view
+            if selected_region == 'All Regions':
+                df_grouped = df_filtered.groupby(['week_ending', 'region'])[metric_column].mean().reset_index()
+                
+                fig = px.line(
+                    df_grouped,
+                    x='week_ending',
+                    y=metric_column,
+                    color='region',
+                    title=f'{selected_metric} by Region',
+                    labels={
+                        'week_ending': 'Week Ending',
+                        metric_column: selected_metric,
+                        'region': 'Region'
+                    }
+                )
+            else:
+                df_region = df_filtered[df_filtered['region'] == selected_region]
+                
+                fig = px.line(
+                    df_region,
+                    x='week_ending',
+                    y=metric_column,
+                    title=f'{selected_metric} for {selected_region}',
+                    labels={
+                        'week_ending': 'Week Ending',
+                        metric_column: selected_metric
+                    }
+                )
             
-            fig = px.line(
-                df_region,
-                x='week_ending',
-                y=metric_column,
-                title=f'{selected_metric} for {selected_region}',
-                labels={
-                    'week_ending': 'Week Ending',
-                    metric_column: selected_metric
-                }
+            fig.update_layout(
+                height=400,
+                hovermode='x unified',
+                xaxis_title="Week Ending",
+                yaxis_title=selected_metric
             )
         
-        fig.update_layout(
-            height=400,
-            hovermode='x unified',
-            xaxis_title="Week Ending",
-            yaxis_title=selected_metric
-        )
-        
         st.plotly_chart(fig, use_container_width=True)
+        
+        if enable_comparison:
+            st.caption("📊 Chart shows data aligned by week of year to compare seasonal patterns across different flu seasons.")
     else:
         st.info("No data available for selected filters")
 
