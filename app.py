@@ -105,6 +105,48 @@ def calculate_week_over_week_change(df, region=None):
     change = ((latest - previous) / previous) * 100
     return change
 
+def detect_anomalies(df, metric='percent_positive', threshold_std=2.0):
+    """Detect anomalies in data using statistical thresholds."""
+    if df.empty:
+        return []
+    
+    # Calculate mean and std for the metric
+    mean_val = df[metric].mean()
+    std_val = df[metric].std()
+    
+    # Find outliers beyond threshold standard deviations
+    df_sorted = df.sort_values('week_ending', ascending=False)
+    anomalies = []
+    
+    for idx, row in df_sorted.head(10).iterrows():
+        z_score = abs((row[metric] - mean_val) / std_val) if std_val > 0 else 0
+        if z_score > threshold_std:
+            anomalies.append({
+                'date': row['week_ending'],
+                'region': row['region'] if 'region' in row else 'N/A',
+                'value': row[metric],
+                'z_score': z_score,
+                'deviation': 'High' if row[metric] > mean_val else 'Low'
+            })
+    
+    return anomalies
+
+def check_data_freshness(df):
+    """Check if data is recent and up-to-date."""
+    if df.empty:
+        return None, None
+    
+    latest_date = df['week_ending'].max()
+    days_old = (datetime.now() - latest_date).days
+    
+    status = "🟢 Current"
+    if days_old > 14:
+        status = "🟡 Slightly Outdated"
+    if days_old > 30:
+        status = "🔴 Outdated"
+    
+    return latest_date, status
+
 st.title("🏥 Public Health Intelligence Platform")
 st.markdown("### Real-time CDC Influenza Surveillance Dashboard")
 
@@ -422,6 +464,31 @@ if not df_filtered.empty:
         )
 else:
     st.info("No data available for selected filters")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔔 Data Quality Alerts")
+
+# Data freshness check
+latest_date, freshness_status = check_data_freshness(df)
+if latest_date:
+    days_old = (datetime.now() - latest_date).days
+    st.sidebar.markdown(f"**Data Status:** {freshness_status}")
+    st.sidebar.markdown(f"Latest Data: {latest_date.strftime('%Y-%m-%d')} ({days_old} days old)")
+
+# Anomaly detection
+metric_column = 'percent_positive' if selected_metric == 'Percent Positive' else 'total_specimens'
+anomalies = detect_anomalies(df_filtered, metric=metric_column, threshold_std=2.5)
+
+if anomalies:
+    st.sidebar.warning(f"⚠️ {len(anomalies)} anomalies detected in recent data")
+    with st.sidebar.expander("View Anomaly Details"):
+        for anomaly in anomalies[:3]:  # Show top 3
+            st.markdown(f"**{anomaly['region']}** - {anomaly['date'].strftime('%Y-%m-%d')}")
+            st.markdown(f"Value: {anomaly['value']:.2f} ({anomaly['deviation']} deviation)")
+            st.markdown(f"Z-score: {anomaly['z_score']:.2f}")
+            st.markdown("---")
+else:
+    st.sidebar.success("✅ No anomalies detected")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### ℹ️ About")
