@@ -106,14 +106,30 @@ def calculate_week_over_week_change(df, region=None):
     return change
 
 st.title("🏥 Public Health Intelligence Platform")
-st.markdown("### Real-time CDC Influenza Surveillance Dashboard")
+st.markdown("### Real-time Respiratory Disease Surveillance")
 
-df = load_data()
+# Create tabs for different diseases
+tab1, tab2 = st.tabs(["🦠 Influenza", "🏥 COVID-19"])
 
-if df.empty:
-    st.warning("⚠️ No data available. Please run the ETL pipeline to fetch CDC flu data.")
-    st.info("Run the following command to fetch data: `python run_etl.py`")
-    st.stop()
+with tab1:
+    st.markdown("### CDC Influenza Surveillance Data")
+    df = load_data()
+
+    if df.empty:
+        st.warning("⚠️ No influenza data available. Please run the ETL pipeline to fetch CDC flu data.")
+        st.info("Run the following command to fetch data: `python run_etl.py`")
+    else:
+        render_flu_dashboard(df)
+
+with tab2:
+    st.markdown("### COVID-19 Hospitalization Data (NHSN)")
+    df_covid = load_covid_data()
+    
+    if df_covid.empty:
+        st.warning("⚠️ No COVID-19 data available. Please run the COVID ETL pipeline.")
+        st.info("Run the following command to fetch data: `python covid_etl.py`")
+    else:
+        render_covid_dashboard(df_covid)
 
 st.sidebar.header("📊 Filters")
 
@@ -378,87 +394,3 @@ st.sidebar.markdown(
 if not df.empty:
     last_updated = df['timestamp'].max()
     st.sidebar.markdown(f"**Last Updated:** {last_updated.strftime('%Y-%m-%d %H:%M UTC')}")
-
-# COVID-19 Section
-st.markdown("---")
-st.markdown("---")
-st.markdown("## 🏥 COVID-19 Hospitalization Surveillance (NHSN)")
-
-df_covid = load_covid_data()
-
-if not df_covid.empty:
-    # Convert date column
-    df_covid['date'] = pd.to_datetime(df_covid['date'])
-    
-    # State selection for COVID
-    st.subheader("📊 COVID-19 Hospital Admissions by State")
-    
-    covid_locations = get_covid_locations()
-    national_data = df_covid[df_covid['geo_type'] == 'nation']
-    
-    covid_col1, covid_col2 = st.columns([1, 3])
-    
-    with covid_col1:
-        location_options = ['National (US)'] + covid_locations
-        selected_location = st.selectbox(
-            "Select Location",
-            options=location_options,
-            index=0,
-            key='covid_location'
-        )
-    
-    with covid_col2:
-        # Filter data based on selection
-        if selected_location == 'National (US)':
-            df_covid_filtered = national_data
-        else:
-            df_covid_filtered = df_covid[
-                (df_covid['geo_type'] == 'state') & 
-                (df_covid['geo_value'] == selected_location.lower())
-            ]
-        
-        if not df_covid_filtered.empty:
-            # Latest metric
-            latest_admissions = df_covid_filtered.sort_values('date', ascending=False).iloc[0]['confirmed_7day_avg']
-            latest_date = df_covid_filtered.sort_values('date', ascending=False).iloc[0]['date']
-            
-            st.metric(
-                label=f"Weekly COVID-19 Hospital Admissions ({selected_location})",
-                value=f"{latest_admissions:.0f}" if pd.notna(latest_admissions) else "N/A",
-                help=f"7-day average as of {latest_date.strftime('%Y-%m-%d')}"
-            )
-    
-    # COVID Trend Chart
-    if not df_covid_filtered.empty:
-        fig_covid = px.area(
-            df_covid_filtered.sort_values('date'),
-            x='date',
-            y='confirmed_7day_avg',
-            title=f'COVID-19 Hospital Admissions Trend - {selected_location}',
-            labels={
-                'date': 'Week Ending',
-                'confirmed_7day_avg': 'Weekly Hospital Admissions'
-            }
-        )
-        
-        fig_covid.update_layout(
-            height=400,
-            hovermode='x unified',
-            xaxis_title="Week Ending",
-            yaxis_title="Hospital Admissions (7-day avg)",
-            showlegend=False
-        )
-        
-        fig_covid.update_traces(
-            fillcolor='rgba(255, 127, 14, 0.3)',
-            line=dict(color='rgb(255, 127, 14)', width=2)
-        )
-        
-        st.plotly_chart(fig_covid, use_container_width=True)
-        
-        st.info("ℹ️ Data Source: NHSN (National Healthcare Safety Network) - Mandatory reporting resumed November 1, 2024")
-    else:
-        st.warning(f"No COVID-19 data available for {selected_location}")
-else:
-    st.warning("⚠️ No COVID-19 data available. Please run the COVID ETL pipeline to fetch hospitalization data.")
-    st.info("Run the following command to fetch COVID-19 data: `python covid_etl.py`")

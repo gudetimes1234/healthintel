@@ -28,6 +28,29 @@ class CDCFluData(Base):
     def __repr__(self):
         return f"<CDCFluData(region={self.region}, week_ending={self.week_ending}, percent_positive={self.percent_positive})>"
 
+class CovidData(Base):
+    __tablename__ = 'covid_data'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(Date, nullable=False)
+    geo_type = Column(String(20), nullable=False)
+    geo_value = Column(String(50), nullable=False)
+    confirmed_cases = Column(Float, nullable=True)
+    deaths = Column(Float, nullable=True)
+    confirmed_7day_avg = Column(Float, nullable=True)
+    deaths_7day_avg = Column(Float, nullable=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index('idx_covid_geo_date', 'geo_type', 'geo_value', 'date'),
+        Index('idx_covid_date', 'date'),
+        Index('idx_covid_timestamp', 'timestamp'),
+        UniqueConstraint('date', 'geo_type', 'geo_value', name='uq_date_geo'),
+    )
+    
+    def __repr__(self):
+        return f"<CovidData(geo_value={self.geo_value}, date={self.date}, cases={self.confirmed_cases})>"
+
 def get_engine():
     database_url = os.getenv('DATABASE_URL')
     if not database_url:
